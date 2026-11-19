@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from classify import classify
+from classify import analyse, classify
 
 OPTIONS_FILE = "/data/options.json"
 STATE_FILE = "/data/processed.json"
@@ -38,23 +38,36 @@ log = logging.getLogger("rd-pyload")
 # State
 # --------------------------------------------------------------------------- #
 def load_state():
+    """State kept in /data so it survives restarts:
+    processed      - Real-Debrid torrent IDs already sent to pyLoad
+    pending        - pyLoad package id -> details, for packages still downloading
+    last_completed - the most recent finished download
+    last_failed    - the most recent failed download"""
+    empty = {"initialised": False, "processed": set(), "pending": {},
+             "last_completed": None, "last_failed": None}
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
             data = json.load(f)
         return {"initialised": data.get("initialised", False),
-                "processed": set(data.get("processed", []))}
+                "processed": set(data.get("processed", [])),
+                "pending": data.get("pending", {}),
+                "last_completed": data.get("last_completed"),
+                "last_failed": data.get("last_failed")}
     except FileNotFoundError:
-        return {"initialised": False, "processed": set()}
+        return empty
     except (OSError, ValueError) as e:
         log.warning("Could not read state file (%s); starting fresh", e)
-        return {"initialised": False, "processed": set()}
+        return empty
 
 
 def save_state(state):
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"initialised": state["initialised"],
-                   "processed": sorted(state["processed"])}, f)
+                   "processed": sorted(state["processed"]),
+                   "pending": state["pending"],
+                   "last_completed": state["last_completed"],
+                   "last_failed": state["last_failed"]}, f)
     os.replace(tmp, STATE_FILE)
 
 
@@ -172,6 +185,11 @@ class PyLoad:
         # Only the pyload-ng spelling applies here (the first variant).
         name, params = variants[0]
         r = self.s.post(f"{self.url}/api/{name}", json=params, timeout=HTTP_TIMEOUT)
+        if r.status_code == 405:
+            # Read-only methods may only allow GET.
+            r = self.s.get(f"{self.url}/api/{name}",
+                           params={k: json.dumps(v) for k, v in params.items()},
+                           timeout=HTTP_TIMEOUT)
         if r.status_code == 401:
             raise RuntimeError(f"pyLoad rejected the API key (HTTP 401: "
                                f"{r.text.strip()[:200]}). Check the key, and that its "
@@ -212,6 +230,41 @@ class PyLoad:
             log.error("Added '%s' to pyLoad but could not move it to the Queue (%s). "
                       "Start it from pyLoad's Collector.", name, e)
         return pid
+
+    def packages(self):
+        """All packages in pyLoad's Queue and Collector, with their links."""
+        out = []
+        for variants in ([("get_queue_data", {}), ("getQueueData", {})],
+                         [("get_collector_data", {}), ("getCollectorData", {})]):
+            try:
+                out.extend(self._call(variants) or [])
+            except Exception as e:
+                if variants[0][0] == "get_queue_data":
+                    raise  # the queue is required; the collector is a bonus
+                log.debug("Could not read pyLoad collector: %s", e)
+        return out
+
+
+# pyLoad download status codes (the same in pyload-ng and classic pyLoad).
+STATUS_NAMES = {"finished": 0, "offline": 1, "skipped": 4, "failed": 8, "aborted": 9}
+DONE_STATUSES = {0, 4}      # finished, skipped
+FAILED_STATUSES = {1, 8, 9}  # offline, failed, aborted
+
+
+def package_progress(p):
+    """Return (links done, links failed, links total) for a pyLoad package."""
+    statuses = []
+    for link in p.get("links") or []:
+        if isinstance(link, dict):
+            s = link.get("status")
+            if isinstance(s, str):
+                s = STATUS_NAMES.get(s.lower(), -1)
+            statuses.append(s)
+    if statuses:
+        return (sum(s in DONE_STATUSES for s in statuses),
+                sum(s in FAILED_STATUSES for s in statuses),
+                len(statuses))
+    return int(p.get("linksdone") or 0), 0, int(p.get("linkstotal") or 0)
 
 
 # --------------------------------------------------------------------------- #
@@ -269,6 +322,21 @@ def publish_status(state_value, attrs):
             _sensor_warned = True
 
 
+def fire_event(event_type, data):
+    """Fire a Home Assistant event, e.g. for a 'download finished' automation."""
+    token = supervisor_token()
+    if not token:
+        return
+    try:
+        r = requests.post(f"{HA_API}/events/{event_type}",
+                          headers={"Authorization": f"Bearer {token}"},
+                          json=data, timeout=10)
+        if r.status_code >= 400:
+            log.warning("Could not fire HA event %s: HTTP %s", event_type, r.status_code)
+    except requests.RequestException as e:
+        log.warning("Could not fire HA event %s: %s", event_type, e)
+
+
 # --------------------------------------------------------------------------- #
 # Main loop
 # --------------------------------------------------------------------------- #
@@ -314,13 +382,23 @@ def sync_once(rd, pyload, opts, state, stats):
 
         folder = None
         if opts.get("sort_downloads", True):
-            kind, folder = classify(name, filenames, opts)
+            kind, folder, title = classify(name, filenames, opts)
             log.info("'%s' looks like %s -> %s", name,
                      {"tv": "a TV show", "film": "a film"}.get(kind, "neither TV nor film"),
                      folder)
-        pyload.add_package(name, direct, folder)
-        log.info("Sent '%s' to pyLoad (%d file(s))", name, len(direct))
+        else:
+            a = analyse(name, filenames)
+            kind, title = a["kind"], a["title"]
+        pid = pyload.add_package(name, direct, folder)
+        log.info("Sent '%s' to pyLoad as '%s' (%d file(s))", name, title, len(direct))
         state["processed"].add(t["id"])
+        if isinstance(pid, int):
+            state["pending"][str(pid)] = {
+                "title": title, "kind": kind, "torrent": name,
+                "sent_at": datetime.now(timezone.utc).isoformat()}
+        else:
+            log.warning("pyLoad didn't return a package id for '%s', so its "
+                        "completion can't be tracked", name)
         save_state(state)
         stats["sent_total"] += 1
         stats["last_sent"] = name
@@ -340,6 +418,60 @@ def sync_once(rd, pyload, opts, state, stats):
     if state["processed"] - current_ids:
         state["processed"] &= current_ids
         save_state(state)
+
+
+def check_completions(pyload, state):
+    """See which packages we sent have finished (or failed) in pyLoad."""
+    if not state["pending"]:
+        return
+    by_id = {}
+    for p in pyload.packages():
+        pid = p.get("pid", p.get("id"))
+        if pid is not None:
+            by_id[str(pid)] = p
+
+    now = datetime.now(timezone.utc).isoformat()
+    for pid, info in list(state["pending"].items()):
+        p = by_id.get(pid)
+        if p is None:
+            log.info("'%s' is no longer in pyLoad (removed before it finished?); "
+                     "no longer tracking it", info["title"])
+            del state["pending"][pid]
+            save_state(state)
+            continue
+
+        done, failed, total = package_progress(p)
+        if total and done == total:
+            log.info("Download complete: %s", info["title"])
+            state["last_completed"] = {"title": info["title"], "kind": info["kind"],
+                                       "torrent": info["torrent"], "at": now}
+            del state["pending"][pid]
+            save_state(state)
+            fire_event("realdebrid_pyload_download_complete", state["last_completed"])
+        elif total and failed and done + failed == total:
+            log.warning("Download failed: %s (%d of %d file(s) failed)",
+                        info["title"], failed, total)
+            state["last_failed"] = {"title": info["title"], "kind": info["kind"],
+                                    "torrent": info["torrent"], "at": now}
+            del state["pending"][pid]
+            save_state(state)
+            fire_event("realdebrid_pyload_download_failed", state["last_failed"])
+
+
+def sensor_attributes(state, stats):
+    lc = state["last_completed"] or {}
+    lf = state["last_failed"] or {}
+    return {
+        **stats,
+        "last_completed": lc.get("title"),
+        "last_completed_type": lc.get("kind"),
+        "last_completed_at": lc.get("at"),
+        "last_failed": lf.get("title"),
+        "last_failed_at": lf.get("at"),
+        "downloading": [i["title"] for i in state["pending"].values()],
+        "downloading_count": len(state["pending"]),
+        "last_check": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def main():
@@ -370,14 +502,22 @@ def main():
 
     interval = int(opts.get("poll_interval", 300))
     while True:
+        error = None
         try:
             sync_once(rd, pyload, opts, state, stats)
-            publish_status("ok", {**stats,
-                                  "last_check": datetime.now(timezone.utc).isoformat()})
         except Exception as e:
             log.error("Sync failed: %s", e)
-            publish_status("error", {**stats, "error": str(e),
-                                     "last_check": datetime.now(timezone.utc).isoformat()})
+            error = str(e)
+        try:
+            check_completions(pyload, state)
+        except Exception as e:
+            log.warning("Could not check pyLoad download progress: %s", e)
+            error = error or f"pyLoad progress check failed: {e}"
+        attrs = sensor_attributes(state, stats)
+        if error:
+            publish_status("error", {**attrs, "error": error})
+        else:
+            publish_status("ok", attrs)
         time.sleep(interval)
 
 

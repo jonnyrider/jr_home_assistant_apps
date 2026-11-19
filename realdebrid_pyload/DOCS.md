@@ -57,9 +57,38 @@ Download folder). pyLoad's **"Create folder for each package"** setting must be 
 ## Home Assistant sensor
 
 The app keeps `sensor.realdebrid_pyload` up to date. Its state is `ok`, `error` or
-`not configured`, with attributes such as `last_sent`, `last_sent_at`,
-`sent_total`, `torrents_on_rd`, `last_check` and `error`. You can use it in
-automations, e.g. to send a phone notification when `last_sent` changes.
+`not configured`, with these attributes:
+
+| Attribute | Meaning |
+| --- | --- |
+| `last_completed` | Name of the last film/programme pyLoad finished, e.g. `The Bear S02E05` or `Dune Part Two (2024)` |
+| `last_completed_type` | `tv`, `film` or `other` |
+| `last_completed_at` | When it finished |
+| `last_failed`, `last_failed_at` | The last download where some files failed |
+| `downloading` | List of titles still downloading in pyLoad |
+| `downloading_count` | How many |
+| `last_sent`, `last_sent_at`, `sent_total` | Last torrent sent to pyLoad, and how many since the app started |
+| `torrents_on_rd`, `last_check`, `error` | General status |
+
+Completions are checked every `poll_interval`, so they can show up to that long
+after pyLoad finishes.
+
+### Events for automations
+
+When a download finishes the app also fires the event
+`realdebrid_pyload_download_complete` (or `realdebrid_pyload_download_failed`)
+with `title`, `kind`, `torrent` and `at`. For example, a phone notification:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: realdebrid_pyload_download_complete
+actions:
+  - action: notify.mobile_app_your_phone
+    data:
+      title: Download complete
+      message: "{{ trigger.event.data.title }} is ready to watch"
+```
 
 Note: the sensor is recreated by the app and won't survive a Home Assistant
 restart until the next check runs.

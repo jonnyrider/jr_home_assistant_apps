@@ -52,7 +52,8 @@ def _with_year(title):
 
 
 def _tv(name):
-    """Return (show, season or None) if `name` looks like TV, else None."""
+    """Return (show, season or None, episode tag or None) if `name` looks like TV,
+    else None. The episode tag is e.g. 'S02E05'."""
     n = _normalise(name)
     for rx, has_season in ((EPISODE, True), (CROSS_EP, True), (SEASON_RANGE, False),
                            (SEASON_WORD, True), (SEASON_TAG, True), (COMPLETE, False)):
@@ -62,7 +63,13 @@ def _tv(name):
             if not show:
                 continue
             season = int(m.group(1)) if has_season else None
-            return show, season
+            episode = None
+            if rx is EPISODE:
+                episode = re.sub(r"[ .-]", "", m.group(0)).upper()
+            elif rx is CROSS_EP:
+                s, e = m.group(0).lower().split("x")
+                episode = f"S{int(s):02d}E{int(e):02d}"
+            return show, season, episode
     return None
 
 
@@ -83,17 +90,16 @@ def _film(name):
     return None
 
 
-def classify(torrent_name, filenames, opts):
-    """Return (kind, folder) where kind is 'tv', 'film' or 'other' and folder is a
-    path relative to pyLoad's download folder."""
-    tv_root = opts.get("tv_folder", "TV Shows")
-    film_root = opts.get("film_folder", "Movies")
-    other_root = opts.get("other_folder", "Other")
+def analyse(torrent_name, filenames):
+    """Work out what a release is. Returns a dict with:
+    kind ('tv' / 'film' / 'other'), title (readable name), and for TV: show,
+    season, episode; for films: film."""
     safe_name = INVALID_CHARS.sub("", torrent_name).strip() or "Download"
+    other = {"kind": "other", "title": safe_name}
 
     has_video = any(f.lower().endswith(VIDEO_EXT) for f in filenames) if filenames else True
     if not has_video:
-        return "other", f"{other_root}/{safe_name}"
+        return other
 
     # Torrent name first, then the individual file names.
     tv = _tv(torrent_name)
@@ -103,19 +109,44 @@ def classify(torrent_name, filenames, opts):
             if tv:
                 break
     if tv:
-        show, season = tv
-        if not opts.get("tv_subfolders", True):
-            return "tv", tv_root
-        if season is None:
-            return "tv", f"{tv_root}/{show}"
-        return "tv", f"{tv_root}/{show}/Season {season:02d}"
+        show, season, episode = tv
+        if episode and len(filenames) <= 1:
+            title = f"{show} {episode}"              # The Bear S02E05
+        elif season is not None:
+            title = f"{show} Season {season}"         # The Bear Season 2
+        else:
+            title = show                              # The Bear
+        return {"kind": "tv", "title": title, "show": show, "season": season,
+                "episode": episode}
 
     film = _film(torrent_name)
     if film is None and len(filenames) == 1:
         film = _film(filenames[0])
     if film:
-        if not opts.get("film_subfolders", True):
-            return "film", film_root
-        return "film", f"{film_root}/{film}"
+        return {"kind": "film", "title": film, "film": film}
 
-    return "other", f"{other_root}/{safe_name}"
+    return other
+
+
+def classify(torrent_name, filenames, opts):
+    """Return (kind, folder, title). kind is 'tv', 'film' or 'other', folder is a
+    path relative to pyLoad's download folder, title is a readable name such as
+    'The Bear S02E05' or 'Dune Part Two (2024)'."""
+    tv_root = opts.get("tv_folder", "TV Shows")
+    film_root = opts.get("film_folder", "Movies")
+    other_root = opts.get("other_folder", "Other")
+    a = analyse(torrent_name, filenames)
+
+    if a["kind"] == "tv":
+        if not opts.get("tv_subfolders", True):
+            return "tv", tv_root, a["title"]
+        if a["season"] is None:
+            return "tv", f"{tv_root}/{a['show']}", a["title"]
+        return "tv", f"{tv_root}/{a['show']}/Season {a['season']:02d}", a["title"]
+
+    if a["kind"] == "film":
+        if not opts.get("film_subfolders", True):
+            return "film", film_root, a["title"]
+        return "film", f"{film_root}/{a['film']}", a["title"]
+
+    return "other", f"{other_root}/{a['title']}", a["title"]
