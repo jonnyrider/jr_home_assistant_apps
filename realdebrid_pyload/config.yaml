@@ -1,5 +1,5 @@
 name: Real-Debrid to pyLoad
-version: "0.3.0"
+version: "0.3.1"
 slug: realdebrid_pyload
 description: Unrestricts finished Real-Debrid torrents and sends the links to pyLoad
 url: https://github.com/YOUR_GITHUB_USER/ha-apps

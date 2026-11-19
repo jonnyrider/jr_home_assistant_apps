@@ -43,6 +43,13 @@ It looks for episode/season markers (`S01E02`, `1x02`, `S01`, `Season 1`,
 films. If the torrent's name gives no clue, it checks the individual file names.
 The Log tab shows which way each download was sorted.
 
+**Current pyload-ng only allows one folder level**, and it replaces spaces and
+other special characters with `_`. So with pyload-ng you get `TV_Shows/` and
+`Movies/` (with each release's files inside), not the show/season subfolders
+above. Use folder names without spaces (e.g. `TV`) to avoid the underscores. Plex,
+Jellyfin and Emby all cope with this layout, because they read the show, season
+and year from the file names.
+
 Folders are **relative to pyLoad's download folder** (pyLoad → Settings → General →
 Download folder). pyLoad's **"Create folder for each package"** setting must be on
 (it is by default), otherwise pyLoad ignores package folders.

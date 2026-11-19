@@ -191,9 +191,17 @@ class PyLoad:
         pid = self._call([("add_package", {"name": name, "links": links, "dest": 0}),
                           ("addPackage", {"name": name, "links": links, "dest": 0})])
         try:
-            data = {"folder": folder}
-            self._call([("set_package_data", {"package_id": pid, "data": data}),
-                        ("setPackageData", {"pid": pid, "data": data})])
+            # pyload-ng: the attribute is "_folder" ("folder" is a read-only property,
+            # which is what caused HTTP 500). pyload-ng also runs it through
+            # secure_filename, which flattens "a/b" into "a_b" and turns spaces into
+            # underscores, so only the top-level folder (TV / Movies / Other) is used.
+            ng_folder = folder.split("/")[0]
+            self._call([("set_package_data", {"package_id": pid,
+                                              "data": {"_folder": ng_folder}}),
+                        ("setPackageData", {"pid": pid, "data": {"folder": folder}})])
+            if self.api_key and ng_folder != folder:
+                log.info("pyload-ng only supports one folder level; '%s' goes in '%s'",
+                         name, ng_folder)
         except Exception as e:  # still download it, just into the default folder
             log.warning("Could not set pyLoad folder for '%s' (%s); "
                         "it will download to pyLoad's default folder", name, e)
