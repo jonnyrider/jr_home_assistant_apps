@@ -217,12 +217,40 @@ class PyLoad:
 # --------------------------------------------------------------------------- #
 # Home Assistant status sensor
 # --------------------------------------------------------------------------- #
+S6_ENV_DIR = "/run/s6/container_environment"
+_sensor_warned = False
+
+
+def supervisor_token():
+    """The Supervisor token. The base image's startup system (s6-overlay) can strip
+    environment variables before starting the app, but it keeps a copy of each one
+    as a file in S6_ENV_DIR, so fall back to reading it from there."""
+    for name in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN"):
+        token = os.environ.get(name)
+        if token:
+            return token.strip()
+        try:
+            with open(os.path.join(S6_ENV_DIR, name), encoding="utf-8") as f:
+                token = f.read().strip()
+            if token:
+                return token
+        except OSError:
+            pass
+    return None
+
+
 def publish_status(state_value, attrs):
-    token = os.environ.get("SUPERVISOR_TOKEN")
+    global _sensor_warned
+    token = supervisor_token()
     if not token:
+        if not _sensor_warned:
+            log.warning("No Home Assistant token found, so sensor.realdebrid_pyload "
+                        "can't be updated. Check 'homeassistant_api: true' is in "
+                        "config.yaml, then reinstall the app.")
+            _sensor_warned = True
         return
     try:
-        requests.post(
+        r = requests.post(
             f"{HA_API}/states/sensor.realdebrid_pyload",
             headers={"Authorization": f"Bearer {token}"},
             json={"state": state_value,
@@ -230,8 +258,15 @@ def publish_status(state_value, attrs):
                                  "icon": "mdi:cloud-download", **attrs}},
             timeout=10,
         )
+        if r.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {r.status_code}: {r.text.strip()[:200]}")
+        if _sensor_warned:
+            log.info("Home Assistant sensor is updating again")
+        _sensor_warned = False
     except requests.RequestException as e:
-        log.debug("Could not update HA sensor: %s", e)
+        if not _sensor_warned:  # warn once, not every cycle
+            log.warning("Could not update sensor.realdebrid_pyload: %s", e)
+            _sensor_warned = True
 
 
 # --------------------------------------------------------------------------- #
