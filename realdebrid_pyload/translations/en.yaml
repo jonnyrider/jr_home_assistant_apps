@@ -1,0 +1,45 @@
+configuration:
+  rd_api_token:
+    name: Real-Debrid API token
+    description: Your private token from https://real-debrid.com/apitoken
+  pyload_url:
+    name: pyLoad URL
+    description: Address of your pyLoad web UI, e.g. http://192.168.1.10:8000
+  pyload_username:
+    name: pyLoad username
+    description: Only used by older pyLoad versions. Leave blank if you use an API key.
+  pyload_password:
+    name: pyLoad password
+    description: Only used by older pyLoad versions. Leave blank if you use an API key.
+  pyload_api_key:
+    name: pyLoad API key
+    description: Required for current pyload-ng. Create one in pyLoad's web interface (it starts with "pl_").
+  poll_interval:
+    name: Check every (seconds)
+    description: How often to look for newly finished torrents on Real-Debrid.
+  skip_existing_on_first_run:
+    name: Skip existing torrents on first run
+    description: When on, torrents already finished when the app first starts are not sent to pyLoad. Turn off to download your whole existing library.
+  delete_torrent_after_send:
+    name: Delete torrent from Real-Debrid after sending
+  verify_ssl:
+    name: Verify pyLoad SSL certificate
+    description: Turn off only if pyLoad uses a self-signed HTTPS certificate.
+  sort_downloads:
+    name: Sort into TV / Movies folders
+    description: Guess from the release name whether it is a TV show or a film and save it in the matching folder.
+  tv_folder:
+    name: TV folder
+    description: Inside pyLoad's download folder, e.g. "TV Shows".
+  film_folder:
+    name: Films folder
+    description: Inside pyLoad's download folder, e.g. "Movies".
+  other_folder:
+    name: Other folder
+    description: For anything that isn't recognised as TV or film (or has no video files).
+  tv_subfolders:
+    name: TV show and season subfolders
+    description: Save as "TV Shows/Show Name/Season 01" instead of straight into the TV folder.
+  film_subfolders:
+    name: Film subfolders
+    description: Save as "Movies/Title (Year)" instead of straight into the films folder.
