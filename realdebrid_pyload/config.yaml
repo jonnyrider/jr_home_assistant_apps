@@ -2,7 +2,7 @@ name: Real-Debrid to pyLoad
 version: "0.4.0"
 slug: realdebrid_pyload
 description: Unrestricts finished Real-Debrid torrents and sends the links to pyLoad
-url: https://github.com/YOUR_GITHUB_USER/ha-apps
+url: https://github.com/jonnyrider/jr_home_assistant_apps/
 arch:
   - aarch64
   - amd64
